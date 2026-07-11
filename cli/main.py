@@ -32,9 +32,15 @@ _def_eng = lambda: (
 
 
 def _store(path):
-    return HistoryStore(os.path.join(
+    return HistoryStore(_db_path(path))
+
+
+
+def _db_path(path):
+    """统一 DB 文件路径（隐藏文件，IFC 同目录）"""
+    return os.path.join(
         os.path.dirname(os.path.abspath(path)), ".bsr.db"
-    ))
+    )
 
 
 # ============================================================
@@ -223,6 +229,83 @@ def cmd_diff(a_path, b_path):
 
 
 # ============================================================
+# bsr rollback — 回滚 IFC 文件到指定 snapshot
+# ============================================================
+@click.command("rollback")
+@click.argument("ifc_path", type=click.Path(exists=True))
+@click.option("--snapshot", default="", help="快照 ID（默认回退最近一个事务）")
+@click.option("--list", "list_snaps", is_flag=True, help="列出可用快照")
+def cmd_rollback(ifc_path, snapshot, list_snaps):
+    """回滚 IFC 到指定快照"""
+    store = _store(ifc_path)
+
+    if list_snaps:
+        snaps = store.get_snapshots(10)
+        if not snaps:
+            click.echo("无可用快照")
+            return
+        click.echo("可用快照:")
+        for s in snaps:
+            click.echo(f"  {s[0]} | {s[2][:12]} | {s[3][:19]} | {s[5]}")
+        return
+
+    if snapshot:
+        snap = store.get_snapshot_by_id(snapshot)
+        if not snap:
+            click.echo(f"❌ 快照不存在: {snapshot}")
+            raise SystemExit(1)
+        store.rollback_to_snapshot(snap, ifc_path)
+        click.echo(f"✅ 已回滚到 {snapshot}")
+    else:
+        # 找最后一个已提交事务
+        tx = store.conn.execute(
+            "SELECT id, description FROM transactions WHERE status='committed' ORDER BY committed_at DESC LIMIT 1"
+        ).fetchone()
+        if not tx:
+            click.echo("❌ 无可回滚的已提交事务")
+            raise SystemExit(1)
+        store.rollback_tx(tx[0], ifc_path)
+        click.echo(f"✅ 已回滚事务 {tx[0]} ({tx[1]})")
+
+
+# ============================================================
+# bsr constrain — 查看/解释约束规则
+# ============================================================
+@click.command("constrain")
+@click.option("--explain", is_flag=True, help="输出规则详细信息")
+@click.argument("ifc_path", type=click.Path(exists=True), required=False)
+def cmd_constrain(explain, ifc_path):
+    """查看约束引擎状态。--explain 输出规则详情"""
+    if explain:
+        rules = [
+            {
+                "rule": "DepthRangeRule",
+                "reason": "ExtrudedAreaSolid 的 Depth 必须在合理范围",
+                "location": "core/constraint/geometric.py:DepthRangeRule",
+                "fix": "调整构件 Depth 到阈值内（building/wall: 0.1~20.0, vegetation: 0.01~5.0）",
+            },
+            {
+                "rule": "GeometryExistsRule",
+                "reason": "每个 BuildingElement 必须有几何表示",
+                "location": "core/constraint/geometric.py:GeometryExistsRule",
+                "fix": "为该构件添加 Representation（IfcExtrudedAreaSolid 或 IfcTessellation）",
+            },
+            {
+                "rule": "ElementHasParentRule",
+                "reason": "每个 BuildingElement 必须在 IfcBuildingStorey 下",
+                "location": "core/constraint/topological.py:ElementHasParentRule",
+                "fix": "添加 IfcRelContainedInSpatialStructure 关系将构件关联到楼层",
+            },
+        ]
+        click.echo(json.dumps(rules, indent=2, ensure_ascii=False))
+        return
+
+    if not ifc_path:
+        click.echo("用法: bsr constrain --explain (查看规则) | bsr constrain <file.ifc> (检查)")
+        return
+
+
+# ============================================================
 # bsr task — 工程任务入口
 # ============================================================
 @click.command("task")
@@ -313,6 +396,9 @@ class BSRGroup(click.Group):
   bsr log file.ifc             查看修改记录
   bsr history file.ifc         完整修改历史
   bsr diff a.ifc b.ifc         对比两个 IFC
+  bsr rollback file.ifc        回滚到上一次快照
+  bsr rollback --snapshot <id> 回滚到指定快照
+  bsr constrain --explain      查看约束规则详情
   bsr status file.ifc          查看项目状态
 
 示例:
@@ -336,6 +422,8 @@ cli.add_command(cmd_set)
 cli.add_command(cmd_log)
 cli.add_command(cmd_history)
 cli.add_command(cmd_diff)
+cli.add_command(cmd_rollback)
+cli.add_command(cmd_constrain)
 cli.add_command(cmd_task)
 cli.add_command(cmd_status)
 

@@ -54,7 +54,7 @@ def run(inp: TaskInput) -> TaskReport:
         return report
 
     # 2. 事务修复
-    store = HistoryStore()
+    store = HistoryStore(HistoryStore.db_path_for(inp.ifc_path))
     exe = BSRExecutor(protected=inp.protected)
     def eng():
         e = ConstraintEngine()

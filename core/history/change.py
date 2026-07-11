@@ -14,6 +14,7 @@ BSR 的状态记录层。
 """
 
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 from typing import Optional
 import hashlib
 import sqlite3
@@ -64,6 +65,12 @@ class HistoryStore:
     新增 transaction 表和 transaction_id 字段。
     """
 
+    @staticmethod
+    def db_path_for(ifc_path: str) -> str:
+        """统一 DB 路径：IFC 同目录隐藏文件"""
+        import os
+        return os.path.join(os.path.dirname(os.path.abspath(ifc_path)), ".bsr.db")
+
     def __init__(self, db_path: str = ":memory:"):
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
@@ -101,6 +108,31 @@ class HistoryStore:
         self.conn.commit()
 
     # ── Transaction ──
+
+    @contextmanager
+    def transaction(self, ifc_path: str = "", description: str = ""):
+        """上下文管理器：全成功 or 全回滚
+        
+        Usage:
+            with store.transaction(ifc_path) as tx:
+                tx_id = tx
+                # do operations...
+                # if constraint fails, raise to auto-rollback
+        """
+        tx_id = self.begin_tx(description)
+        try:
+            yield tx_id
+            self.commit_tx(tx_id)
+        except Exception:
+            # 如果有 IFC 文件路径且 snapshot 存在，恢复
+            if ifc_path:
+                try:
+                    self.rollback_tx(tx_id, ifc_path)
+                except Exception:
+                    self.abort_tx(tx_id)
+            else:
+                self.abort_tx(tx_id)
+            raise
 
     def begin_tx(self, description: str = "") -> str:
         tx_id = f"tx-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"

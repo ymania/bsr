@@ -71,7 +71,7 @@ def run(inp: TaskInput) -> TaskReport:
     # 2. 事务执行——只改建筑构件，跳过环境元素
     SKIP_KEYWORDS = ["grass", "plant", "tree", "vegetation", "sculpture", "sidewalk"]
     targets = [el for el in targets if not any(kw in (el.Name or "").lower() for kw in SKIP_KEYWORDS)]
-    store = HistoryStore()
+    store = HistoryStore(HistoryStore.db_path_for(inp.ifc_path))
     exe = BSRExecutor(protected=inp.protected)
     def eng():
         e = ConstraintEngine()
@@ -79,6 +79,9 @@ def run(inp: TaskInput) -> TaskReport:
         return e
     exe.register_engine(eng)
     exe.register_history(lambda: store)
+
+    # 执行前 snapshot（保障回滚能力）
+    store.create_snapshot(inp.ifc_path, f"before rename-room {inp.floor}")
 
     tx_id = store.begin_tx(f"rename-room {inp.floor} prefix={inp.prefix}")
 
@@ -91,7 +94,7 @@ def run(inp: TaskInput) -> TaskReport:
         op = Operation(
             name="ModifyProperty",
             params={"element_id": f"#{el.id()}", "property": "Name", "value": new_name},
-            protection_level=2,
+            protection_level=1,
             agent_prompt=f"rename {old_name} → {new_name}",
         )
         r = exe.execute(op, inp.ifc_path, inp.ifc_path, transaction_id=tx_id)
